@@ -23,8 +23,8 @@ RUN set -eux; \
 
 RUN set -eux; \
     case "${TARGETARCH}" in \
-        amd64) ASSET="telemt-x86_64-linux-musl.tar.gz" ;; \
-        arm64) ASSET="telemt-aarch64-linux-musl.tar.gz" ;; \
+        amd64) ASSET="telemt-x86_64-linux-gnu.tar.gz" ;; \
+        arm64) ASSET="telemt-aarch64-linux-gnu.tar.gz" ;; \
         *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     VERSION="${TELEMT_VERSION#refs/tags/}"; \
@@ -111,14 +111,14 @@ CMD ["config.toml"]
 # ==========================
 # Production Distroless on MUSL
 # ==========================
-FROM gcr.io/distroless/static-debian12 AS prod
+FROM debian:trixie-slim AS prod
 
 WORKDIR /app
 
 COPY --from=minimal /telemt /app/telemt
 COPY config.toml /app/config.toml
 
-USER nonroot:nonroot
+USER root:root
 
 EXPOSE 443 9090 9091
 
