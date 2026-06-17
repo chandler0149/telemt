@@ -176,6 +176,8 @@ pub struct StartupPingResult {
 
 pub enum UpstreamStream {
     Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
     Shadowsocks(Box<ShadowsocksStream>),
 }
 
@@ -183,6 +185,8 @@ impl std::fmt::Debug for UpstreamStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Tcp(_) => f.write_str("UpstreamStream::Tcp(..)"),
+            #[cfg(unix)]
+            Self::Unix(_) => f.write_str("UpstreamStream::Unix(..)"),
             Self::Shadowsocks(_) => f.write_str("UpstreamStream::Shadowsocks(..)"),
         }
     }
@@ -192,6 +196,8 @@ impl UpstreamStream {
     pub fn into_tcp(self) -> Result<TcpStream> {
         match self {
             Self::Tcp(stream) => Ok(stream),
+            #[cfg(unix)]
+            Self::Unix(_) => Err(ProxyError::Config("unix stream not supported here".into())),
             Self::Shadowsocks(_) => Err(ProxyError::Config(
                 "shadowsocks upstreams are not supported when general.use_middle_proxy = true"
                     .to_string(),
@@ -208,6 +214,8 @@ impl AsyncRead for UpstreamStream {
     ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
             Self::Shadowsocks(stream) => Pin::new(stream.as_mut()).poll_read(cx, buf),
         }
     }
@@ -221,6 +229,8 @@ impl AsyncWrite for UpstreamStream {
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
             Self::Shadowsocks(stream) => Pin::new(stream.as_mut()).poll_write(cx, buf),
         }
     }
@@ -228,6 +238,8 @@ impl AsyncWrite for UpstreamStream {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_flush(cx),
             Self::Shadowsocks(stream) => Pin::new(stream.as_mut()).poll_flush(cx),
         }
     }
@@ -235,6 +247,8 @@ impl AsyncWrite for UpstreamStream {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Shadowsocks(stream) => Pin::new(stream.as_mut()).poll_shutdown(cx),
         }
     }
@@ -1245,53 +1259,82 @@ impl UpstreamManager {
                 username,
                 password,
             } => {
-                // Try to parse as SocketAddr first (IP:port), otherwise treat as hostname:port
-                let mut stream = if let Ok(proxy_addr) = address.parse::<SocketAddr>() {
-                    // IP:port format - use socket with optional interface binding
-                    let bind_ip = Self::resolve_bind_address(
-                        interface,
-                        &None,
-                        proxy_addr,
-                        bind_rr.as_deref(),
-                        false,
-                    );
+                let mut local_addr = None;
+                let mut socks_proxy_addr = None;
 
-                    let socket = create_outgoing_socket_bound(proxy_addr, bind_ip)?;
+                let domain_socket = if address.starts_with("unix://") {
+                    Some(address.strip_prefix("unix://").unwrap().to_string())
+                } else {
+                    None
+                };
 
-                    socket.set_nonblocking(true)?;
-                    match socket.connect(&proxy_addr.into()) {
-                        Ok(()) => {}
-                        Err(err)
-                            if err.raw_os_error() == Some(libc::EINPROGRESS)
-                                || err.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(ProxyError::Io(err)),
-                    }
-
-                    let std_stream: std::net::TcpStream = socket.into();
-                    let stream = TcpStream::from_std(std_stream)?;
-
-                    match tokio::time::timeout(connect_timeout, stream.writable()).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => return Err(ProxyError::Io(e)),
-                        Err(_) => {
-                            return Err(ProxyError::ConnectionTimeout {
-                                addr: proxy_addr.to_string(),
-                            });
+                let mut stream = if let Some(path) = domain_socket {
+                    #[cfg(unix)]
+                    {
+                        match tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(path.clone())).await {
+                            Ok(Ok(stream)) => UpstreamStream::Unix(stream),
+                            Ok(Err(e)) => return Err(ProxyError::Io(e)),
+                            Err(_) => return Err(ProxyError::ConnectionTimeout { addr: path }),
                         }
                     }
-                    if let Some(e) = stream.take_error()? {
-                        return Err(ProxyError::Io(e));
+                    #[cfg(not(unix))]
+                    {
+                        let _ = path;
+                        return Err(ProxyError::Config("unix domain sockets are not supported on this platform".into()));
                     }
-                    stream
                 } else {
-                    // Hostname:port format - use tokio DNS resolution
-                    // Note: interface binding is not supported for hostnames
-                    if interface.is_some() {
-                        warn!(
-                            "SOCKS5 interface binding is not supported for hostname addresses, ignoring"
+                    // Try to parse as SocketAddr first (IP:port), otherwise treat as hostname:port
+                    let s = if let Ok(proxy_addr) = address.parse::<SocketAddr>() {
+                        // IP:port format - use socket with optional interface binding
+                        let bind_ip = Self::resolve_bind_address(
+                            interface,
+                            &None,
+                            proxy_addr,
+                            bind_rr.as_deref(),
+                            false,
                         );
-                    }
-                    Self::connect_hostname_with_dns_override(address, connect_timeout).await?
+
+                        let socket = create_outgoing_socket_bound(proxy_addr, bind_ip)?;
+
+                        socket.set_nonblocking(true)?;
+                        match socket.connect(&proxy_addr.into()) {
+                            Ok(()) => {}
+                            Err(err)
+                                if err.raw_os_error() == Some(libc::EINPROGRESS)
+                                    || err.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(err) => return Err(ProxyError::Io(err)),
+                        }
+
+                        let std_stream: std::net::TcpStream = socket.into();
+                        let stream = TcpStream::from_std(std_stream)?;
+
+                        match tokio::time::timeout(connect_timeout, stream.writable()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => return Err(ProxyError::Io(e)),
+                            Err(_) => {
+                                return Err(ProxyError::ConnectionTimeout {
+                                    addr: proxy_addr.to_string(),
+                                });
+                            }
+                        }
+                        if let Some(e) = stream.take_error()? {
+                            return Err(ProxyError::Io(e));
+                        }
+                        stream
+                    } else {
+                        // Hostname:port format - use tokio DNS resolution
+                        // Note: interface binding is not supported for hostnames
+                        if interface.is_some() {
+                            warn!(
+                                "SOCKS5 interface binding is not supported for hostname addresses, ignoring"
+                            );
+                        }
+                        Self::connect_hostname_with_dns_override(address, connect_timeout).await?
+                    };
+                    
+                    local_addr = s.local_addr().ok();
+                    socks_proxy_addr = s.peer_addr().ok();
+                    UpstreamStream::Tcp(s)
                 };
 
                 debug!(config = ?config, "Socks5 connection");
@@ -1315,10 +1358,8 @@ impl UpstreamManager {
                         });
                     }
                 };
-                let local_addr = stream.local_addr().ok();
-                let socks_proxy_addr = stream.peer_addr().ok();
                 Ok((
-                    UpstreamStream::Tcp(stream),
+                    stream,
                     UpstreamEgressInfo {
                         upstream_id,
                         route_kind: UpstreamRouteKind::Socks5,

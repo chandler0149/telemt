@@ -973,6 +973,8 @@ fn socket_addrs_from_upstream_stream(
 ) -> (Option<SocketAddr>, Option<SocketAddr>) {
     match stream {
         UpstreamStream::Tcp(tcp) => (tcp.local_addr().ok(), tcp.peer_addr().ok()),
+        #[cfg(unix)]
+        UpstreamStream::Unix(_) => (None, None),
         UpstreamStream::Shadowsocks(_) => (None, None),
     }
 }
