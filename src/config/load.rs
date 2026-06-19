@@ -1945,6 +1945,16 @@ impl ProxyConfig {
             .client_mss_value()
             .map_err(|error| ProxyError::Config(format!("server.client_mss {error}")))?;
         for (idx, listener) in config.server.listeners.iter().enumerate() {
+            if listener.ip.is_none() && listener.listen_address_unix.is_none() {
+                return Err(ProxyError::Config(format!(
+                    "server.listeners[{idx}] must specify either ip or listen_address_unix"
+                )));
+            }
+            if listener.ip.is_some() && listener.listen_address_unix.is_some() {
+                return Err(ProxyError::Config(format!(
+                    "server.listeners[{idx}] cannot specify both ip and listen_address_unix"
+                )));
+            }
             if listener.client_mss.is_some() {
                 listener
                     .effective_client_mss(&config.server)
@@ -2202,7 +2212,9 @@ impl ProxyConfig {
                 .unwrap_or("0.0.0.0");
             if let Ok(ipv4) = ipv4_str.parse::<IpAddr>() {
                 config.server.listeners.push(ListenerConfig {
-                    ip: ipv4,
+                    ip: Some(ipv4),
+                    listen_address_unix: None,
+                    listen_unix_sock_perm: None,
                     port: Some(config.server.port),
                     client_mss: None,
                     synlimit: SynLimitMode::default(),
@@ -2219,7 +2231,9 @@ impl ProxyConfig {
                 && let Ok(ipv6) = ipv6_str.parse::<IpAddr>()
             {
                 config.server.listeners.push(ListenerConfig {
-                    ip: ipv6,
+                    ip: Some(ipv6),
+                    listen_address_unix: None,
+                    listen_unix_sock_perm: None,
                     port: Some(config.server.port),
                     client_mss: None,
                     synlimit: SynLimitMode::default(),

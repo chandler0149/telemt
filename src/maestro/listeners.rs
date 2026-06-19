@@ -83,9 +83,62 @@ pub(crate) async fn bind_listeners(
         .await;
     let mut listeners = Vec::new();
 
+    let mut has_unix_listener = false;
+    #[cfg(unix)]
+    let mut unix_listeners_to_spawn = Vec::new();
+
     for listener_conf in &config.server.listeners {
+        #[cfg(unix)]
+        if let Some(ref unix_path) = listener_conf.listen_address_unix {
+            let _ = tokio::fs::remove_file(unix_path).await;
+            let unix_listener = match UnixListener::bind(unix_path) {
+                Ok(l) => l,
+                Err(e) => {
+                    error!("Failed to bind unix socket {}: {}", unix_path, e);
+                    continue;
+                }
+            };
+            if let Some(ref perm_str) = listener_conf.listen_unix_sock_perm {
+                match u32::from_str_radix(perm_str.trim_start_matches('0'), 8) {
+                    Ok(mode) => {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perms = std::fs::Permissions::from_mode(mode);
+                        if let Err(e) = std::fs::set_permissions(unix_path, perms) {
+                            error!(
+                                "Failed to set unix socket permissions to {}: {}",
+                                perm_str, e
+                            );
+                        } else {
+                            info!("Listening on unix:{} (mode {})", unix_path, perm_str);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Invalid listen_unix_sock_perm '{}': {}. Ignoring.",
+                            perm_str, e
+                        );
+                        info!("Listening on unix:{}", unix_path);
+                    }
+                }
+            } else {
+                info!("Listening on unix:{}", unix_path);
+            }
+
+            has_unix_listener = true;
+            let listener_proxy_protocol = listener_conf
+                .proxy_protocol
+                .unwrap_or(config.server.proxy_protocol);
+            unix_listeners_to_spawn.push((unix_listener, listener_proxy_protocol));
+            continue;
+        }
+
+        let ip = match listener_conf.ip {
+            Some(ip) => ip,
+            None => continue,
+        };
+
         let listener_port = listener_port_or_legacy(listener_conf, config);
-        let addr = SocketAddr::new(listener_conf.ip, listener_port);
+        let addr = SocketAddr::new(ip, listener_port);
         if addr.is_ipv4() && !decision_ipv4_dc {
             warn!(%addr, "Skipping IPv4 listener: IPv4 disabled by [network]");
             continue;
@@ -107,7 +160,7 @@ pub(crate) async fn bind_listeners(
         };
         let options = ListenOptions {
             reuse_port: listener_conf.reuse_allow,
-            ipv6_only: listener_conf.ip.is_ipv6(),
+            ipv6_only: ip.is_ipv6(),
             backlog: config.server.listen_backlog,
             client_mss,
             ..Default::default()
@@ -131,18 +184,18 @@ pub(crate) async fn bind_listeners(
 
                 let public_host = if let Some(ref announce) = listener_conf.announce {
                     announce.clone()
-                } else if listener_conf.ip.is_unspecified() {
-                    if listener_conf.ip.is_ipv4() {
+                } else if ip.is_unspecified() {
+                    if ip.is_ipv4() {
                         detected_ip_v4
                             .map(|ip| ip.to_string())
-                            .unwrap_or_else(|| listener_conf.ip.to_string())
+                            .unwrap_or_else(|| ip.to_string())
                     } else {
                         detected_ip_v6
                             .map(|ip| ip.to_string())
-                            .unwrap_or_else(|| listener_conf.ip.to_string())
+                            .unwrap_or_else(|| ip.to_string())
                     }
                 } else {
-                    listener_conf.ip.to_string()
+                    ip.to_string()
                 };
 
                 if config.general.links.public_host.is_none()
@@ -218,7 +271,6 @@ pub(crate) async fn bind_listeners(
         print_proxy_links(&host, port, config);
     }
 
-    let mut has_unix_listener = false;
     #[cfg(unix)]
     if let Some(ref unix_path) = config.server.listen_unix_sock {
         let _ = tokio::fs::remove_file(unix_path).await;
@@ -252,7 +304,11 @@ pub(crate) async fn bind_listeners(
         }
 
         has_unix_listener = true;
+        unix_listeners_to_spawn.push((unix_listener, config.server.proxy_protocol));
+    }
 
+    #[cfg(unix)]
+    for (unix_listener, proxy_protocol_enabled) in unix_listeners_to_spawn {
         let mut config_rx_unix: watch::Receiver<Arc<ProxyConfig>> = config_rx.clone();
         let admission_rx_unix = admission_rx.clone();
         let stats = stats.clone();
@@ -330,7 +386,7 @@ pub(crate) async fn bind_listeners(
                         let ip_tracker = ip_tracker.clone();
                         let beobachten = beobachten.clone();
                         let shared = shared.clone();
-                        let proxy_protocol_enabled = config.server.proxy_protocol;
+                        let proxy_protocol_enabled = proxy_protocol_enabled;
 
                         tokio::spawn(async move {
                             let _permit = permit;

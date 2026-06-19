@@ -139,7 +139,8 @@ pub struct HotFields {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerSynLimitHotFields {
-    pub ip: IpAddr,
+    pub ip: Option<IpAddr>,
+    pub listen_address_unix: Option<String>,
     pub port: Option<u16>,
     pub synlimit: SynLimitMode,
     pub synlimit_seconds: u32,
@@ -288,6 +289,7 @@ impl ListenerSynLimitHotFields {
     fn from_listener(listener: &ListenerConfig) -> Self {
         Self {
             ip: listener.ip,
+            listen_address_unix: listener.listen_address_unix.clone(),
             port: listener.port,
             synlimit: listener.synlimit,
             synlimit_seconds: listener.synlimit_seconds,
@@ -344,6 +346,8 @@ fn listeners_equal(
     }
     lhs.iter().zip(rhs.iter()).all(|(a, b)| {
         a.ip == b.ip
+            && a.listen_address_unix == b.listen_address_unix
+            && a.listen_unix_sock_perm == b.listen_unix_sock_perm
             && a.port == b.port
             && a.client_mss == b.client_mss
             && a.announce == b.announce
@@ -613,7 +617,10 @@ fn overlay_listener_synlimit_fields(old: &mut [ListenerConfig], new: &[ListenerC
         return;
     }
     for (old_listener, new_listener) in old.iter_mut().zip(new.iter()) {
-        if old_listener.ip != new_listener.ip || old_listener.port != new_listener.port {
+        if old_listener.ip != new_listener.ip
+            || old_listener.listen_address_unix != new_listener.listen_address_unix
+            || old_listener.port != new_listener.port
+        {
             continue;
         }
         old_listener.synlimit = new_listener.synlimit;

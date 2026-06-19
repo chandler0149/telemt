@@ -2165,7 +2165,14 @@ impl UpstreamConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListenerConfig {
-    pub ip: IpAddr,
+    #[serde(default)]
+    pub ip: Option<IpAddr>,
+    /// Per-listener Unix Domain Socket path. If set, this listener uses a unix socket instead of TCP.
+    #[serde(default)]
+    pub listen_address_unix: Option<String>,
+    /// Unix socket file permissions (octal, e.g. "0666" or "0777").
+    #[serde(default)]
+    pub listen_unix_sock_perm: Option<String>,
     /// Per-listener TCP port. If omitted, falls back to legacy `server.port`.
     #[serde(default)]
     pub port: Option<u16>,

@@ -783,20 +783,25 @@ fn resolve_link_hosts(
             push_unique_host(&mut hosts, &ip.to_string());
             continue;
         }
-        if listener.ip.is_unspecified() {
-            let detected_ip = if listener.ip.is_ipv4() {
+        let ip = match listener.ip {
+            Some(ip) => ip,
+            None => continue,
+        };
+
+        if ip.is_unspecified() {
+            let detected_ip = if ip.is_ipv4() {
                 startup_detected_ip_v4
             } else {
                 startup_detected_ip_v6
             };
-            if let Some(ip) = detected_ip {
-                push_unique_host(&mut hosts, &ip.to_string());
+            if let Some(detected) = detected_ip {
+                push_unique_host(&mut hosts, &detected.to_string());
             } else {
-                push_unique_host(&mut hosts, &listener.ip.to_string());
+                push_unique_host(&mut hosts, &ip.to_string());
             }
             continue;
         }
-        push_unique_host(&mut hosts, &listener.ip.to_string());
+        push_unique_host(&mut hosts, &ip.to_string());
     }
 
     if !hosts.is_empty() {

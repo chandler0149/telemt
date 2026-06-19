@@ -437,16 +437,20 @@ fn notrack_targets(cfg: &ProxyConfig) -> (Vec<(Option<IpAddr>, u16)>, Vec<(Optio
             } else {
                 for listener in &cfg.server.listeners {
                     let port = listener.port.unwrap_or(cfg.server.port);
-                    if listener.ip.is_ipv4() {
-                        if listener.ip.is_unspecified() {
+                    let ip = match listener.ip {
+                        Some(ip) => ip,
+                        None => continue,
+                    };
+                    if ip.is_ipv4() {
+                        if ip.is_unspecified() {
                             v4_targets.insert((None, port));
                         } else {
-                            v4_targets.insert((Some(listener.ip), port));
+                            v4_targets.insert((Some(ip), port));
                         }
-                    } else if listener.ip.is_unspecified() {
+                    } else if ip.is_unspecified() {
                         v6_targets.insert((None, port));
                     } else {
-                        v6_targets.insert((Some(listener.ip), port));
+                        v6_targets.insert((Some(ip), port));
                     }
                 }
             }

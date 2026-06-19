@@ -161,23 +161,27 @@ fn synlimit_targets(cfg: &ProxyConfig) -> SynLimitTargets {
             continue;
         }
         let port = listener.port.unwrap_or(cfg.server.port);
-        let ip = (!listener.ip.is_unspecified()).then_some(listener.ip);
+        let ip = match listener.ip {
+            Some(ip) => ip,
+            None => continue,
+        };
+        let target_ip = (!ip.is_unspecified()).then_some(ip);
         let seconds = listener.synlimit_seconds;
         let hitcount = listener.synlimit_hitcount;
         let burst = listener.synlimit_burst;
 
-        match (backend, listener.ip.is_ipv4()) {
+        match (backend, ip.is_ipv4()) {
             (SynLimitMode::Iptables, true) => {
-                iptables_v4.insert((ip, port, seconds, hitcount, burst));
+                iptables_v4.insert((target_ip, port, seconds, hitcount, burst));
             }
             (SynLimitMode::Iptables, false) => {
-                iptables_v6.insert((ip, port, seconds, hitcount, burst));
+                iptables_v6.insert((target_ip, port, seconds, hitcount, burst));
             }
             (SynLimitMode::Nftables, true) => {
-                nft_v4.insert((ip, port, seconds, hitcount, burst));
+                nft_v4.insert((target_ip, port, seconds, hitcount, burst));
             }
             (SynLimitMode::Nftables, false) => {
-                nft_v6.insert((ip, port, seconds, hitcount, burst));
+                nft_v6.insert((target_ip, port, seconds, hitcount, burst));
             }
             (SynLimitMode::Off, _) => {}
         }
