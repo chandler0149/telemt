@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",
+    "mtproto-server",
+]
+
 [package]
 name = "telemt"
 version = "3.4.18"
@@ -7,6 +13,8 @@ edition = "2024"
 redteam_offline_expected_fail = []
 
 [dependencies]
+mtproto-server = { path = "mtproto-server" }
+
 # C
 libc = "0.2"
 

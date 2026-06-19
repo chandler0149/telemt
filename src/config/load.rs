@@ -16,7 +16,7 @@ use crate::error::{ProxyError, Result};
 use super::defaults::*;
 use super::types::*;
 
-const ACCESS_SECRET_BYTES: usize = 16;
+use mtproto_server::handshake::MTPROTO_SECRET_BYTES;
 const MAX_ME_WRITER_CMD_CHANNEL_CAPACITY: usize = 16_384;
 const MAX_ME_ROUTE_CHANNEL_CAPACITY: usize = 8_192;
 const MAX_ME_C2ME_CHANNEL_CAPACITY: usize = 8_192;
@@ -798,7 +798,7 @@ pub(crate) struct UserAuthSnapshot {
 #[derive(Debug, Clone)]
 pub(crate) struct UserAuthEntry {
     pub(crate) user: String,
-    pub(crate) secret: [u8; ACCESS_SECRET_BYTES],
+    pub(crate) secret: [u8; MTPROTO_SECRET_BYTES],
 }
 
 impl UserAuthSnapshot {
@@ -813,7 +813,7 @@ impl UserAuthSnapshot {
                 user: user.clone(),
                 reason: "Must be 32 hex characters".to_string(),
             })?;
-            if decoded.len() != ACCESS_SECRET_BYTES {
+            if decoded.len() != MTPROTO_SECRET_BYTES {
                 return Err(ProxyError::InvalidSecret {
                     user: user.clone(),
                     reason: "Must be 32 hex characters".to_string(),
@@ -824,7 +824,7 @@ impl UserAuthSnapshot {
                 ProxyError::Config("Too many users for runtime auth snapshot".to_string())
             })?;
 
-            let mut secret = [0u8; ACCESS_SECRET_BYTES];
+            let mut secret = [0u8; MTPROTO_SECRET_BYTES];
             secret.copy_from_slice(&decoded);
             entries.push(UserAuthEntry {
                 user: user.clone(),

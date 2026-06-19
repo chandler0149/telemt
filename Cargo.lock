@@ -1777,6 +1777,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "mtproto-server"
+version = "3.4.18"
+dependencies = [
+ "aes",
+ "anyhow",
+ "bytes",
+ "cbc",
+ "chrono",
+ "crc32c",
+ "crc32fast",
+ "criterion",
+ "crossbeam-queue",
+ "ctr",
+ "dashmap",
+ "futures",
+ "hex",
+ "hmac",
+ "md-5",
+ "ml-kem",
+ "num-bigint",
+ "num-traits",
+ "parking_lot",
+ "proptest",
+ "rand 0.10.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "static_assertions",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+ "url",
+ "x25519-dalek",
+ "x509-parser",
+ "zeroize",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2926,6 +2970,7 @@ dependencies = [
  "lru",
  "md-5",
  "ml-kem",
+ "mtproto-server",
  "nix",
  "notify",
  "num-bigint",

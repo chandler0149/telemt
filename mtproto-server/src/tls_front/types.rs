@@ -215,7 +215,7 @@ impl Default for TlsBehaviorProfile {
 
 impl TlsBehaviorProfile {
     /// Refresh cached visible ServerHello summary fields and quality.
-    pub(crate) fn refresh_server_hello_summary(&mut self, server_hello: &ParsedServerHello) {
+    pub fn refresh_server_hello_summary(&mut self, server_hello: &ParsedServerHello) {
         let mut has_replay_safe_server_hello = false;
         if matches!(
             self.source,

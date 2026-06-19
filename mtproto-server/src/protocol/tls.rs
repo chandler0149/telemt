@@ -117,9 +117,9 @@ mod named_curve {
 }
 
 /// TLS X25519 named group.
-pub(crate) const TLS_NAMED_GROUP_X25519: u16 = named_curve::X25519;
+pub const TLS_NAMED_GROUP_X25519: u16 = named_curve::X25519;
 /// TLS X25519MLKEM768 named group.
-pub(crate) const TLS_NAMED_GROUP_X25519MLKEM768: u16 = named_curve::X25519MLKEM768;
+pub const TLS_NAMED_GROUP_X25519MLKEM768: u16 = named_curve::X25519MLKEM768;
 
 const X25519_KEY_SHARE_LEN: usize = 32;
 const X25519MLKEM768_CLIENT_KEY_SHARE_LEN: usize = 1216;
@@ -129,7 +129,7 @@ const MLKEM768_SERVER_CIPHERTEXT_LEN: usize = 1088;
 
 /// ServerHello key_share selected for the authenticated ClientHello.
 #[derive(Clone, Debug)]
-pub(crate) struct ServerHelloKeyShare {
+pub struct ServerHelloKeyShare {
     group: u16,
     key_exchange: Vec<u8>,
 }
@@ -666,7 +666,7 @@ fn server_hello_key_share_candidate_order(preferred_group: Option<u16>) -> [u16;
 }
 
 /// Build a ServerHello key_share using a profile-preferred group when possible.
-pub(crate) fn build_server_hello_key_share(
+pub fn build_server_hello_key_share(
     handshake: &[u8],
     preferred_group: Option<u16>,
     rng: &SecureRandom,
@@ -719,7 +719,7 @@ pub fn build_server_hello(
 /// The caller is responsible for selecting a suite that is compatible with the
 /// already-authenticated ClientHello. Keeping the selection outside this
 /// builder avoids extra ClientHello parsing in the response construction path.
-pub(crate) fn build_server_hello_with_cipher(
+pub fn build_server_hello_with_cipher(
     secret: &[u8],
     client_digest: &[u8; TLS_DIGEST_LEN],
     session_id: &[u8],
@@ -1343,7 +1343,7 @@ fn is_tls13_cipher_suite(suite: [u8; 2]) -> bool {
 /// This is intentionally a borrowed, zero-allocation scan. It runs only for an
 /// authenticated success response and fails closed for malformed or unsupported
 /// ClientHello shapes that cannot produce a DPI-consistent ServerHello.
-pub(crate) fn select_server_hello_cipher_suite(
+pub fn select_server_hello_cipher_suite(
     handshake: &[u8],
     preferred: [u8; 2],
 ) -> Option<[u8; 2]> {

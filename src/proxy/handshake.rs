@@ -4,7 +4,6 @@
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use hmac::{Hmac, Mac};
 #[cfg(test)]
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -33,10 +32,10 @@ use crate::stream::{CryptoReader, CryptoWriter, FakeTlsReader, FakeTlsWriter};
 use crate::tls_front::{TlsFrontCache, emulator};
 #[cfg(test)]
 use rand::RngExt;
-use sha2::Sha256;
-use subtle::ConstantTimeEq;
 
-const ACCESS_SECRET_BYTES: usize = 16;
+
+use mtproto_server::handshake::*;
+
 const UNKNOWN_SNI_WARN_COOLDOWN_SECS: u64 = 5;
 #[cfg(test)]
 const WARNED_SECRET_MAX_ENTRIES: usize = 64;
@@ -58,7 +57,6 @@ const OVERLOAD_CANDIDATE_BUDGET_UNHINTED: usize = 8;
 const EXPENSIVE_INVALID_SCAN_SATURATION_THRESHOLD: usize = 64;
 const RECENT_USER_RING_SCAN_LIMIT: usize = 32;
 
-type HmacSha256 = Hmac<Sha256>;
 
 #[cfg(test)]
 const AUTH_PROBE_BACKOFF_BASE_MS: u64 = 1;
@@ -104,33 +102,6 @@ fn should_emit_unknown_sni_warn_in(shared: &ProxySharedState, now: Instant) -> b
     true
 }
 
-#[derive(Clone, Copy)]
-struct ParsedTlsAuthMaterial {
-    digest: [u8; tls::TLS_DIGEST_LEN],
-    session_id: [u8; 32],
-    session_id_len: usize,
-    now: i64,
-    ignore_time_skew: bool,
-    boot_time_cap_secs: u32,
-}
-
-#[derive(Clone, Copy)]
-struct TlsCandidateValidation {
-    digest: [u8; tls::TLS_DIGEST_LEN],
-    session_id: [u8; 32],
-    session_id_len: usize,
-}
-
-struct MtprotoCandidateValidation {
-    proto_tag: ProtoTag,
-    dc_idx: i16,
-    dec_key: [u8; 32],
-    dec_iv: u128,
-    enc_key: [u8; 32],
-    enc_iv: u128,
-    decryptor: AesCtr,
-    encryptor: AesCtr,
-}
 
 fn sni_hint_hash(sni: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -251,154 +222,6 @@ fn budget_for_validation(total_users: usize, overload: bool, has_hint: bool) -> 
     total_users.min(cap.max(1))
 }
 
-fn parse_tls_auth_material(
-    handshake: &[u8],
-    ignore_time_skew: bool,
-    replay_window_secs: u64,
-) -> Option<ParsedTlsAuthMaterial> {
-    if handshake.len() < tls::TLS_DIGEST_POS + tls::TLS_DIGEST_LEN + 1 {
-        return None;
-    }
-
-    let digest: [u8; tls::TLS_DIGEST_LEN] = handshake
-        [tls::TLS_DIGEST_POS..tls::TLS_DIGEST_POS + tls::TLS_DIGEST_LEN]
-        .try_into()
-        .ok()?;
-
-    let session_id_len_pos = tls::TLS_DIGEST_POS + tls::TLS_DIGEST_LEN;
-    let session_id_len = usize::from(handshake.get(session_id_len_pos).copied()?);
-    if session_id_len > 32 {
-        return None;
-    }
-    let session_id_start = session_id_len_pos + 1;
-    if handshake.len() < session_id_start + session_id_len {
-        return None;
-    }
-
-    let mut session_id = [0u8; 32];
-    session_id[..session_id_len]
-        .copy_from_slice(&handshake[session_id_start..session_id_start + session_id_len]);
-
-    let now = if !ignore_time_skew {
-        let d = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        i64::try_from(d.as_secs()).ok()?
-    } else {
-        0_i64
-    };
-
-    let replay_window_u32 = u32::try_from(replay_window_secs).unwrap_or(u32::MAX);
-    let boot_time_cap_secs = if ignore_time_skew {
-        0
-    } else {
-        tls::BOOT_TIME_MAX_SECS
-            .min(replay_window_u32)
-            .min(tls::BOOT_TIME_COMPAT_MAX_SECS)
-    };
-
-    Some(ParsedTlsAuthMaterial {
-        digest,
-        session_id,
-        session_id_len,
-        now,
-        ignore_time_skew,
-        boot_time_cap_secs,
-    })
-}
-
-fn compute_tls_hmac_zeroed_digest(secret: &[u8], handshake: &[u8]) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(&handshake[..tls::TLS_DIGEST_POS]);
-    mac.update(&[0u8; tls::TLS_DIGEST_LEN]);
-    mac.update(&handshake[tls::TLS_DIGEST_POS + tls::TLS_DIGEST_LEN..]);
-    mac.finalize().into_bytes().into()
-}
-
-fn validate_tls_secret_candidate(
-    parsed: &ParsedTlsAuthMaterial,
-    handshake: &[u8],
-    secret: &[u8],
-) -> Option<TlsCandidateValidation> {
-    let computed = compute_tls_hmac_zeroed_digest(secret, handshake);
-    if !bool::from(parsed.digest[..28].ct_eq(&computed[..28])) {
-        return None;
-    }
-
-    let timestamp = u32::from_le_bytes([
-        parsed.digest[28] ^ computed[28],
-        parsed.digest[29] ^ computed[29],
-        parsed.digest[30] ^ computed[30],
-        parsed.digest[31] ^ computed[31],
-    ]);
-
-    if !parsed.ignore_time_skew {
-        let is_boot_time = parsed.boot_time_cap_secs > 0 && timestamp < parsed.boot_time_cap_secs;
-        if !is_boot_time {
-            let time_diff = parsed.now - i64::from(timestamp);
-            if !(tls::TIME_SKEW_MIN..=tls::TIME_SKEW_MAX).contains(&time_diff) {
-                return None;
-            }
-        }
-    }
-
-    Some(TlsCandidateValidation {
-        digest: parsed.digest,
-        session_id: parsed.session_id,
-        session_id_len: parsed.session_id_len,
-    })
-}
-
-fn validate_mtproto_secret_candidate(
-    handshake: &[u8; HANDSHAKE_LEN],
-    dec_prekey: &[u8; PREKEY_LEN],
-    dec_iv: u128,
-    enc_prekey: &[u8; PREKEY_LEN],
-    enc_iv: u128,
-    secret: &[u8; ACCESS_SECRET_BYTES],
-    config: &ProxyConfig,
-    is_tls: bool,
-) -> Option<MtprotoCandidateValidation> {
-    let mut dec_key_input = Zeroizing::new(Vec::with_capacity(PREKEY_LEN + secret.len()));
-    dec_key_input.extend_from_slice(dec_prekey);
-    dec_key_input.extend_from_slice(secret);
-    let dec_key = Zeroizing::new(sha256(&dec_key_input));
-
-    let mut decryptor = AesCtr::new(&dec_key, dec_iv);
-    let mut decrypted = *handshake;
-    decryptor.apply(&mut decrypted);
-
-    let tag_bytes: [u8; 4] = [
-        decrypted[PROTO_TAG_POS],
-        decrypted[PROTO_TAG_POS + 1],
-        decrypted[PROTO_TAG_POS + 2],
-        decrypted[PROTO_TAG_POS + 3],
-    ];
-    let proto_tag = ProtoTag::from_bytes(tag_bytes)?;
-    if !mode_enabled_for_proto(config, proto_tag, is_tls) {
-        return None;
-    }
-
-    let dc_idx = i16::from_le_bytes([decrypted[DC_IDX_POS], decrypted[DC_IDX_POS + 1]]);
-
-    let mut enc_key_input = Zeroizing::new(Vec::with_capacity(PREKEY_LEN + secret.len()));
-    enc_key_input.extend_from_slice(enc_prekey);
-    enc_key_input.extend_from_slice(secret);
-    let enc_key = Zeroizing::new(sha256(&enc_key_input));
-
-    let encryptor = AesCtr::new(&enc_key, enc_iv);
-
-    Some(MtprotoCandidateValidation {
-        proto_tag,
-        dc_idx,
-        dec_key: *dec_key,
-        dec_iv,
-        enc_key: *enc_key,
-        enc_iv,
-        decryptor,
-        encryptor,
-    })
-}
 
 fn normalize_auth_probe_ip(peer_ip: IpAddr) -> IpAddr {
     match peer_ip {
@@ -802,19 +625,19 @@ fn warn_invalid_secret_once_in(
 
 fn decode_user_secret(shared: &ProxySharedState, name: &str, secret_hex: &str) -> Option<Vec<u8>> {
     match hex::decode(secret_hex) {
-        Ok(bytes) if bytes.len() == ACCESS_SECRET_BYTES => Some(bytes),
+        Ok(bytes) if bytes.len() == MTPROTO_SECRET_BYTES => Some(bytes),
         Ok(bytes) => {
             warn_invalid_secret_once_in(
                 shared,
                 name,
                 "invalid_length",
-                ACCESS_SECRET_BYTES,
+                MTPROTO_SECRET_BYTES,
                 Some(bytes.len()),
             );
             None
         }
         Err(_) => {
-            warn_invalid_secret_once_in(shared, name, "invalid_hex", ACCESS_SECRET_BYTES, None);
+            warn_invalid_secret_once_in(shared, name, "invalid_hex", MTPROTO_SECRET_BYTES, None);
             None
         }
     }
@@ -1220,7 +1043,7 @@ where
     let mut validation_session_id = [0u8; 32];
     let mut validation_session_id_len = 0usize;
     let mut validated_user = String::new();
-    let mut validated_secret = [0u8; ACCESS_SECRET_BYTES];
+    let mut validated_secret = [0u8; MTPROTO_SECRET_BYTES];
     let mut validated_user_id: Option<u32> = None;
 
     if let Some(snapshot) = config.runtime_user_auth() {
@@ -1432,7 +1255,7 @@ where
             }
         };
         let secret = match secrets.iter().find(|(name, _)| *name == validation.user) {
-            Some((_, s)) if s.len() == ACCESS_SECRET_BYTES => s,
+            Some((_, s)) if s.len() == MTPROTO_SECRET_BYTES => s,
             _ => {
                 maybe_apply_server_hello_delay(config).await;
                 return HandshakeResult::BadClient { reader, writer };
@@ -1757,13 +1580,13 @@ where
                         &enc_prekey,
                         enc_iv,
                         &entry.secret,
-                        config,
-                        is_tls,
                     ) {
-                        matched_user = entry.user.clone();
-                        matched_user_id = Some($user_id);
-                        matched_validation = Some(validation);
-                        true
+                        if mode_enabled_for_proto(config, validation.proto_tag, is_tls) {
+                            matched_user = entry.user.clone();
+                            matched_user_id = Some($user_id);
+                            matched_validation = Some(validation);
+                            true
+                        } else { false }
                     } else {
                         false
                     }
@@ -1926,12 +1749,12 @@ where
         let mut validation_checks = 0usize;
 
         for (user, secret) in decoded_users {
-            if secret.len() != ACCESS_SECRET_BYTES {
+            if secret.len() != MTPROTO_SECRET_BYTES {
                 continue;
             }
             validation_checks = validation_checks.saturating_add(1);
 
-            let mut secret_arr = [0u8; ACCESS_SECRET_BYTES];
+            let mut secret_arr = [0u8; MTPROTO_SECRET_BYTES];
             secret_arr.copy_from_slice(&secret);
             let Some(validation) = validate_mtproto_secret_candidate(
                 handshake,
@@ -1940,11 +1763,13 @@ where
                 &enc_prekey,
                 enc_iv,
                 &secret_arr,
-                config,
-                is_tls,
             ) else {
                 continue;
             };
+
+            if !mode_enabled_for_proto(config, validation.proto_tag, is_tls) {
+                continue;
+            }
 
             shared
                 .handshake

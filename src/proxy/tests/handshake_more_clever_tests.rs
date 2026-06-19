@@ -400,7 +400,7 @@ async fn invalid_secret_warning_lock_contention_and_bound() {
                     shared.as_ref(),
                     &user_name,
                     "invalid_hex",
-                    ACCESS_SECRET_BYTES,
+                    MTPROTO_SECRET_BYTES,
                     None,
                 );
             }

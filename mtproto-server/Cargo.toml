@@ -1,0 +1,54 @@
+[package]
+name = "mtproto-server"
+version = "3.4.18"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.42", features = ["full", "tracing"] }
+tokio-util = { version = "0.7", features = ["full"] }
+
+# Crypto
+aes = "0.8"
+ctr = "0.9"
+cbc = "0.1"
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+crc32fast = "1.4"
+crc32c = "0.6"
+zeroize = { version = "1.8", features = ["derive"] }
+subtle = "2.6"
+static_assertions = "1.1"
+ml-kem = { version = "0.3.2", default-features = false, features = ["alloc", "zeroize"] }
+rand = "0.10"
+hex = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+x25519-dalek = "2"
+
+# Utils
+bytes = "1.9"
+thiserror = "2.0"
+tracing = "0.1"
+anyhow = "1.0"
+dashmap = "6.1"
+url = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+crossbeam-queue = "0.3"
+
+# Serialization
+x509-parser = "0.18"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP
+reqwest = { version = "0.13", features = ["rustls"], default-features = false }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.8"
+proptest = "1.4"
+futures = "0.3"
+tempfile = "3.27.0"

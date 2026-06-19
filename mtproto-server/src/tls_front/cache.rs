@@ -24,12 +24,12 @@ static FULL_CERT_SENT_IPS_GAUGE: AtomicU64 = AtomicU64::new(0);
 static FULL_CERT_SENT_CAP_DROPS: AtomicU64 = AtomicU64::new(0);
 
 /// Current number of IPs tracked by the TLS full-cert budget gate.
-pub(crate) fn full_cert_sent_ips_for_metrics() -> u64 {
+pub fn full_cert_sent_ips_for_metrics() -> u64 {
     FULL_CERT_SENT_IPS_GAUGE.load(Ordering::Relaxed)
 }
 
 /// Number of new IPs denied a full-cert budget slot because the cap was reached.
-pub(crate) fn full_cert_sent_cap_drops_for_metrics() -> u64 {
+pub fn full_cert_sent_cap_drops_for_metrics() -> u64 {
     FULL_CERT_SENT_CAP_DROPS.load(Ordering::Relaxed)
 }
 
@@ -44,22 +44,22 @@ pub struct TlsFrontCache {
 }
 
 /// Read-only health view for one configured TLS front domain.
-#[derive(Debug, Clone)]
-pub(crate) struct TlsFrontProfileHealth {
-    pub(crate) domain: String,
-    pub(crate) source: &'static str,
-    pub(crate) quality: &'static str,
-    pub(crate) key_share_group: &'static str,
-    pub(crate) age_seconds: u64,
-    pub(crate) is_default: bool,
-    pub(crate) has_cert_info: bool,
-    pub(crate) has_cert_payload: bool,
-    pub(crate) server_hello_record_len: usize,
-    pub(crate) server_hello_extensions: usize,
-    pub(crate) app_data_records: usize,
-    pub(crate) ticket_records: usize,
-    pub(crate) change_cipher_spec_count: u8,
-    pub(crate) total_app_data_len: usize,
+#[derive(Clone, Debug)]
+pub struct TlsFrontProfileHealth {
+    pub domain: String,
+    pub source: &'static str,
+    pub quality: &'static str,
+    pub key_share_group: &'static str,
+    pub age_seconds: u64,
+    pub is_default: bool,
+    pub has_cert_info: bool,
+    pub has_cert_payload: bool,
+    pub server_hello_record_len: usize,
+    pub server_hello_extensions: usize,
+    pub app_data_records: usize,
+    pub ticket_records: usize,
+    pub change_cipher_spec_count: u8,
+    pub total_app_data_len: usize,
 }
 
 fn profile_source_label(source: TlsProfileSource) -> &'static str {
@@ -139,7 +139,7 @@ impl TlsFrontCache {
         self.memory.read().await.contains_key(domain)
     }
 
-    pub(crate) async fn profile_health_snapshot(
+    pub async fn profile_health_snapshot(
         &self,
         domains: &[String],
         max_domains: usize,

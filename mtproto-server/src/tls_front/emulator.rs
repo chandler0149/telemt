@@ -63,7 +63,7 @@ fn should_replay_profiled_server_hello_shape(cached: &CachedTlsData) -> bool {
 }
 
 /// Return the origin-profiled ServerHello key_share group when it is replay-safe.
-pub(crate) fn profiled_server_hello_key_share_group(cached: &CachedTlsData) -> Option<u16> {
+pub fn profiled_server_hello_key_share_group(cached: &CachedTlsData) -> Option<u16> {
     if !should_replay_profiled_server_hello_shape(cached) {
         return None;
     }

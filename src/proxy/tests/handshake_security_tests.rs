@@ -1840,8 +1840,8 @@ fn invalid_secret_warning_keys_do_not_collide_on_colon_boundaries() {
     let shared = ProxySharedState::new();
     clear_warned_secrets_for_testing_in_shared(shared.as_ref());
 
-    warn_invalid_secret_once_in(shared.as_ref(), "a:b", "c", ACCESS_SECRET_BYTES, Some(1));
-    warn_invalid_secret_once_in(shared.as_ref(), "a", "b:c", ACCESS_SECRET_BYTES, Some(2));
+    warn_invalid_secret_once_in(shared.as_ref(), "a:b", "c", MTPROTO_SECRET_BYTES, Some(1));
+    warn_invalid_secret_once_in(shared.as_ref(), "a", "b:c", MTPROTO_SECRET_BYTES, Some(2));
 
     let warned = warned_secrets_for_testing_in_shared(shared.as_ref());
     let guard = warned.lock().expect("warned set lock must be available");
@@ -1863,7 +1863,7 @@ fn invalid_secret_warning_cache_is_bounded() {
             shared.as_ref(),
             &user,
             "invalid_length",
-            ACCESS_SECRET_BYTES,
+            MTPROTO_SECRET_BYTES,
             Some(idx),
         );
     }
