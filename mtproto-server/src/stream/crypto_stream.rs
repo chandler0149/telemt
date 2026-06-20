@@ -734,15 +734,15 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for CryptoWriter<W> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         let this = self.get_mut();
 
-        // Best-effort flush pending ciphertext before shutdown
+        if matches!(this.state, CryptoWriterState::Poisoned { .. }) {
+            let err = this.take_poison_error();
+            return Poll::Ready(Err(err));
+        }
+
+        // Flush pending ciphertext before shutdown
         match this.poll_flush_pending(cx) {
-            Poll::Pending => {
-                debug!(
-                    pending_len = this.pending_len(),
-                    "CryptoWriter: shutdown with pending ciphertext (upstream Pending)"
-                );
-            }
-            Poll::Ready(Err(_)) => {}
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Ready(Ok(())) => {}
         }
 
