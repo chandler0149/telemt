@@ -57,7 +57,7 @@ use std::io::{self, ErrorKind, Result};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::{debug, trace};
+use tracing::trace;
 
 use super::state::{StreamState, YieldBuffer};
 use crate::crypto::AesCtr;

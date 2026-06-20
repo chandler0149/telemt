@@ -40,7 +40,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use super::state::{HeaderBuffer, StreamState, WriteBuffer, YieldBuffer};
+use super::state::{HeaderBuffer, StreamState, YieldBuffer};
 use crate::protocol::constants::{
     MAX_TLS_CIPHERTEXT_SIZE, MAX_TLS_PLAINTEXT_SIZE, TLS_RECORD_ALERT, TLS_RECORD_APPLICATION,
     TLS_RECORD_CHANGE_CIPHER, TLS_RECORD_HANDSHAKE, TLS_VERSION,
@@ -639,7 +639,7 @@ enum TlsWriterState {
 
     /// Writing a complete TLS record (header + body), possibly partially
     WritingRecord {
-        record: WriteBuffer,
+        offset: usize,
         payload_size: usize,
     },
 
@@ -676,6 +676,7 @@ impl StreamState for TlsWriterState {
 pub struct FakeTlsWriter<W> {
     upstream: W,
     state: TlsWriterState,
+    record_buf: BytesMut,
 }
 
 impl<W> FakeTlsWriter<W> {
@@ -683,6 +684,7 @@ impl<W> FakeTlsWriter<W> {
         Self {
             upstream,
             state: TlsWriterState::Idle,
+            record_buf: BytesMut::with_capacity(TLS_HEADER_SIZE + MAX_TLS_PAYLOAD),
         }
     }
 
@@ -704,7 +706,7 @@ impl<W> FakeTlsWriter<W> {
     }
 
     pub fn has_pending(&self) -> bool {
-        matches!(&self.state, TlsWriterState::WritingRecord { record, .. } if !record.is_empty())
+        matches!(&self.state, TlsWriterState::WritingRecord { .. })
     }
 
     fn poison(&mut self, error: io::Error) {
@@ -720,18 +722,7 @@ impl<W> FakeTlsWriter<W> {
         }
     }
 
-    fn build_record(data: &[u8]) -> BytesMut {
-        let header = TlsRecordHeader {
-            record_type: TLS_RECORD_APPLICATION,
-            version: TLS_VERSION,
-            length: data.len() as u16,
-        };
 
-        let mut record = BytesMut::with_capacity(TLS_HEADER_SIZE + data.len());
-        record.extend_from_slice(&header.to_bytes());
-        record.extend_from_slice(data);
-        record
-    }
 }
 
 enum FlushResult {
@@ -744,10 +735,11 @@ impl<W: AsyncWrite + Unpin> FakeTlsWriter<W> {
     fn poll_flush_record_inner(
         upstream: &mut W,
         cx: &mut Context<'_>,
-        record: &mut WriteBuffer,
+        record_buf: &[u8],
+        offset: &mut usize,
     ) -> FlushResult {
-        while !record.is_empty() {
-            let data = record.pending();
+        while *offset < record_buf.len() {
+            let data = &record_buf[*offset..];
             match Pin::new(&mut *upstream).poll_write(cx, data) {
                 Poll::Pending => return FlushResult::Pending,
                 Poll::Ready(Err(e)) => return FlushResult::Error(e),
@@ -757,7 +749,7 @@ impl<W: AsyncWrite + Unpin> FakeTlsWriter<W> {
                         "upstream returned 0 bytes written",
                     ));
                 }
-                Poll::Ready(Ok(n)) => record.advance(n),
+                Poll::Ready(Ok(n)) => *offset += n,
             }
         }
 
@@ -780,14 +772,14 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for FakeTlsWriter<W> {
             }
 
             TlsWriterState::WritingRecord {
-                mut record,
+                mut offset,
                 payload_size,
             } => {
                 // Finish writing previous record before accepting new bytes.
-                match Self::poll_flush_record_inner(&mut this.upstream, cx, &mut record) {
+                match Self::poll_flush_record_inner(&mut this.upstream, cx, &this.record_buf, &mut offset) {
                     FlushResult::Pending => {
                         this.state = TlsWriterState::WritingRecord {
-                            record,
+                            offset,
                             payload_size,
                         };
                         return Poll::Pending;
@@ -817,42 +809,31 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for FakeTlsWriter<W> {
         let chunk_size = buf.len().min(MAX_TLS_PAYLOAD);
         let chunk = &buf[..chunk_size];
 
-        // Build the complete record (header + payload)
-        let record_data = Self::build_record(chunk);
+        // Build the complete record (header + payload) directly into our reusable buffer
+        let header = TlsRecordHeader {
+            record_type: TLS_RECORD_APPLICATION,
+            version: TLS_VERSION,
+            length: chunk_size as u16,
+        };
 
-        match Pin::new(&mut this.upstream).poll_write(cx, &record_data) {
-            Poll::Ready(Ok(n)) if n == record_data.len() => Poll::Ready(Ok(chunk_size)),
+        this.record_buf.clear();
+        this.record_buf.extend_from_slice(&header.to_bytes());
+        this.record_buf.extend_from_slice(chunk);
 
-            Poll::Ready(Ok(n)) => {
-                // Partial write of the record: store remainder.
-                let mut write_buffer = WriteBuffer::with_max_size(MAX_PENDING_WRITE);
-                // record_data length is <= 16389, fits MAX_PENDING_WRITE
-                let _ = write_buffer.extend(&record_data[n..]);
-
+        let mut offset = 0;
+        match Self::poll_flush_record_inner(&mut this.upstream, cx, &this.record_buf, &mut offset) {
+            FlushResult::Pending => {
                 this.state = TlsWriterState::WritingRecord {
-                    record: write_buffer,
+                    offset,
                     payload_size: chunk_size,
                 };
-
-                // We have accepted chunk_size bytes from caller.
                 Poll::Ready(Ok(chunk_size))
             }
-
-            Poll::Ready(Err(e)) => {
+            FlushResult::Error(e) => {
                 this.poison(Error::new(e.kind(), e.to_string()));
                 Poll::Ready(Err(e))
             }
-
-            Poll::Pending => {
-                // Buffer entire record and report success for this chunk.
-                let mut write_buffer = WriteBuffer::with_max_size(MAX_PENDING_WRITE);
-                let _ = write_buffer.extend(&record_data);
-
-                this.state = TlsWriterState::WritingRecord {
-                    record: write_buffer,
-                    payload_size: chunk_size,
-                };
-
+            FlushResult::Complete(_) => {
                 Poll::Ready(Ok(chunk_size))
             }
         }
@@ -871,12 +852,12 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for FakeTlsWriter<W> {
             }
 
             TlsWriterState::WritingRecord {
-                mut record,
+                mut offset,
                 payload_size,
-            } => match Self::poll_flush_record_inner(&mut this.upstream, cx, &mut record) {
+            } => match Self::poll_flush_record_inner(&mut this.upstream, cx, &this.record_buf, &mut offset) {
                 FlushResult::Pending => {
                     this.state = TlsWriterState::WritingRecord {
-                        record,
+                        offset,
                         payload_size,
                     };
                     return Poll::Pending;
@@ -904,15 +885,36 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for FakeTlsWriter<W> {
         let state = std::mem::replace(&mut this.state, TlsWriterState::Idle);
 
         match state {
-            TlsWriterState::WritingRecord {
-                mut record,
-                payload_size: _,
-            } => {
-                // Best-effort flush (do not block shutdown forever).
-                let _ = Self::poll_flush_record_inner(&mut this.upstream, cx, &mut record);
-                this.state = TlsWriterState::Idle;
+            TlsWriterState::Poisoned { error } => {
+                this.state = TlsWriterState::Poisoned { error: None };
+                let err = error.unwrap_or_else(|| Error::other("stream previously poisoned"));
+                return Poll::Ready(Err(err));
             }
-            _ => {
+
+            TlsWriterState::WritingRecord {
+                mut offset,
+                payload_size,
+            } => {
+                // Flush pending TLS record data before shutdown
+                match Self::poll_flush_record_inner(&mut this.upstream, cx, &this.record_buf, &mut offset) {
+                    FlushResult::Pending => {
+                        this.state = TlsWriterState::WritingRecord {
+                            offset,
+                            payload_size,
+                        };
+                        return Poll::Pending;
+                    }
+                    FlushResult::Error(e) => {
+                        this.poison(Error::new(e.kind(), e.to_string()));
+                        return Poll::Ready(Err(e));
+                    }
+                    FlushResult::Complete(_) => {
+                        this.state = TlsWriterState::Idle;
+                    }
+                }
+            }
+
+            TlsWriterState::Idle => {
                 this.state = TlsWriterState::Idle;
             }
         }
